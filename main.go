@@ -2,10 +2,60 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
+	"strconv"
 )
+
+type ValueType string
+
+const (
+	ARRAY  ValueType = "*"
+	BULK   ValueType = "$"
+	STRING ValueType = "+"
+)
+
+type Value struct {
+	typ   ValueType
+	bulk  string
+	str   string
+	array []Value
+}
+
+func (v *Value) readArray(reader io.Reader) {
+	buf := make([]byte, 4)
+	reader.Read(buf)
+	arrLen, err := strconv.Atoi(string(buf[1]))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	for range arrLen {
+		bulk := v.readBulk(reader)
+		v.array = append(v.array, bulk)
+	}
+}
+
+func (v *Value) readBulk(reader io.Reader) Value {
+
+	buf := make([]byte, 4)
+	reader.Read(buf)
+
+	n, err := strconv.Atoi(string(buf[1]))
+	if err != nil {
+		fmt.Println(err)
+		return Value{}
+	}
+
+	bulkBuf := make([]byte, n+2)
+	reader.Read(bulkBuf)
+
+	bulk := string(bulkBuf[:n])
+	return Value{typ: BULK, bulk: bulk}
+}
 
 func main() {
 	listen, error := net.Listen("tcp", ":6379")
@@ -23,10 +73,9 @@ func main() {
 	defer conn.Close()
 
 	for {
-		buf := make([]byte, 1024)
-		conn.Read(buf)
-
-		fmt.Println(string(buf))
+		v := Value{typ: ARRAY}
+		v.readArray(conn)
+		fmt.Println(v.array)
 
 		conn.Write([]byte("+OK\r\n"))
 	}
