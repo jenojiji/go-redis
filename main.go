@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,8 @@ const (
 	ARRAY  ValueType = "*"
 	BULK   ValueType = "$"
 	STRING ValueType = "+"
+	ERROR  ValueType = "-"
+	NULL   ValueType = ""
 )
 
 type Value struct {
@@ -22,6 +25,8 @@ type Value struct {
 	bulk  string
 	str   string
 	array []Value
+	err   ValueType
+	null  ValueType
 }
 
 func (v *Value) readArray(reader io.Reader) {
@@ -64,20 +69,100 @@ func main() {
 	}
 	defer listen.Close()
 
+	fmt.Println("Server is running on port 6379")
+
 	conn, error := listen.Accept()
 	if error != nil {
 		fmt.Println(error)
 		os.Exit(1)
 	}
 
+	fmt.Println("Connection Accepted")
+
 	defer conn.Close()
 
 	for {
 		v := Value{typ: ARRAY}
 		v.readArray(conn)
-		fmt.Println(v.array)
+		handle(conn, &v)
+	}
+}
 
-		conn.Write([]byte("+OK\r\n"))
+type Handler func(*Value) *Value
+
+var Handlers = map[string]Handler{
+	"COMMAND": command,
+	"GET":     get,
+	"SET":     set,
+}
+
+var DB = map[string]string{}
+
+func handle(conn net.Conn, v *Value) {
+	cmd := v.array[0].bulk
+	handler, ok := Handlers[cmd]
+	if !ok {
+		fmt.Println("Invalid command ", cmd)
+		return
 	}
 
+	reply := handler(v)
+	w := NewWriter(conn)
+	w.Write(reply)
+}
+
+func get(v *Value) *Value {
+	args := v.array[1:]
+	if len(args) != 1 {
+		return &Value{typ: ERROR, err: "ERR invalid no of args for 'GET"}
+	}
+	name := args[0].bulk
+	val, ok := DB[name]
+	if !ok {
+		return &Value{typ: NULL}
+	}
+
+	return &Value{typ: BULK, bulk: val}
+}
+
+func set(v *Value) *Value {
+	args := v.array[1:]
+	if len(args) != 2 {
+		return &Value{typ: ERROR, err: "ERR invalid no of args for 'SET'"}
+	}
+
+	key := args[0].bulk
+	val := args[1].bulk
+	DB[key] = val
+
+	return &Value{typ: STRING, str: "OK"}
+}
+
+func command(v *Value) *Value {
+	return &Value{typ: STRING, str: "OK"}
+}
+
+type Writer struct {
+	writer io.Writer
+}
+
+func NewWriter(w io.Writer) *Writer {
+	return &Writer{writer: bufio.NewWriter(w)}
+}
+
+func (w *Writer) Write(v *Value) {
+	var reply string
+	switch v.typ {
+	case STRING:
+		reply = fmt.Sprintf("%s%s\r\n", v.typ, v.str)
+	case BULK:
+		reply = fmt.Sprintf("%s%d\r\n%s\r\n", v.typ, len(v.bulk), v.bulk)
+	case ERROR:
+		reply = fmt.Sprintf("%s%s\r\n", v.typ, v.err)
+	case NULL:
+		reply = "$-1\r\n"
+	}
+
+	w.writer.Write([]byte(reply))
+	w.writer.(*bufio.Writer).Flush()
 }
