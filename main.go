@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 )
 
 type ValueType string
@@ -96,7 +97,19 @@ var Handlers = map[string]Handler{
 	"SET":     set,
 }
 
-var DB = map[string]string{}
+type Database struct {
+	store map[string]string
+	mu    sync.RWMutex
+}
+
+func NewDatabase() *Database {
+	return &Database{
+		store: map[string]string{},
+		mu:    sync.RWMutex{},
+	}
+}
+
+var DB = NewDatabase()
 
 func handle(conn net.Conn, v *Value) {
 	cmd := v.array[0].bulk
@@ -117,7 +130,9 @@ func get(v *Value) *Value {
 		return &Value{typ: ERROR, err: "ERR invalid no of args for 'GET"}
 	}
 	name := args[0].bulk
-	val, ok := DB[name]
+	DB.mu.RLock()
+	val, ok := DB.store[name]
+	DB.mu.RUnlock()
 	if !ok {
 		return &Value{typ: NULL}
 	}
@@ -133,7 +148,9 @@ func set(v *Value) *Value {
 
 	key := args[0].bulk
 	val := args[1].bulk
-	DB[key] = val
+	DB.mu.Lock()
+	DB.store[key] = val
+	DB.mu.Unlock()
 
 	return &Value{typ: STRING, str: "OK"}
 }
